@@ -561,7 +561,7 @@ pub(crate) fn cell_props(fill: Option<&BorderFill>, valign: wordcraft_doc::props
         span: 1,
         borders: fill.map(|f| Borders { between: None, inside_v: None, ..f.borders }),
         shading: fill.and_then(|f| f.fill),
-        valign,
+        valign: Some(valign),
         margins,
         ..Default::default()
     }
