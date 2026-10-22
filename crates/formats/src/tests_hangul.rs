@@ -1,16 +1,16 @@
-//! Hangul (HWP 5.0, HWPX) import: synthetic documents and hostile input.
+//! Hangul HWPX import: synthetic documents and hostile input.
 
 use wordcraft_doc::props::{LineSpacing, TabAlign, TabLeader, VMerge};
 use wordcraft_doc::{Align, Block, Document};
 
 use crate::hangul_samples;
-use crate::{hwp, hwpx, import};
+use crate::{hwpx, import};
 
 fn paras(doc: &Document) -> Vec<&wordcraft_doc::Paragraph> {
     doc.body.iter().filter_map(|b| b.as_para()).collect()
 }
 
-/// What both synthetic documents hold.
+/// What the synthetic document holds.
 fn check(doc: &Document) {
     let ps = paras(doc);
     let first = ps.first().unwrap();
@@ -53,16 +53,6 @@ fn check(doc: &Document) {
 }
 
 #[test]
-fn hwp_uncompressed_and_compressed() {
-    for compressed in [false, true] {
-        let bytes = hangul_samples::hwp(compressed);
-        assert!(hwp::is_hwp(&bytes));
-        let doc = import("hwp", &bytes).unwrap().unwrap();
-        check(&doc);
-    }
-}
-
-#[test]
 fn hwpx_package() {
     let bytes = hangul_samples::hwpx();
     assert!(hwpx::is_hwpx(&bytes));
@@ -80,18 +70,6 @@ fn hwpx_package() {
 
 #[test]
 fn refused_documents_say_why() {
-    // Password-protected and distribution documents.
-    for (flag, word) in [(2u8, "password"), (4, "distribution")] {
-        let mut bytes = hangul_samples::hwp(false);
-        // The FileHeader stream's flags byte: find the signature, flags at +36.
-        let at = bytes.windows(17).position(|w| w == b"HWP Document File").unwrap();
-        bytes[at + 36] = flag;
-        let err = hwp::import(&bytes).unwrap_err();
-        assert!(err.starts_with("HWP: ") && err.contains(word), "{err}");
-    }
-    // HWP 3 (Hangul 97) files are not compound files.
-    let err = hwp::import(b"HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05").unwrap_err();
-    assert!(err.contains("HWP 3"), "{err}");
     // An encrypted HWPX package.
     let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let o = zip::write::SimpleFileOptions::default();
@@ -102,15 +80,15 @@ fn refused_documents_say_why() {
     let bytes = z.finish().unwrap().into_inner();
     assert!(hwpx::import(&bytes).unwrap_err().contains("password"));
     // Not Hangul at all.
-    assert!(hwp::import(b"not a document").is_err());
+    assert!(hwpx::import(b"not a document").is_err());
     assert!(hwpx::import(b"PK\x03\x04junk").is_err());
-    assert!(!hwp::is_hwp(b"not") && !hwpx::is_hwpx(b"PK\x03\x04"));
+    assert!(!hwpx::is_hwpx(b"not") && !hwpx::is_hwpx(b"PK\x03\x04"));
 }
 
 /// Every truncation and many bit flips of the samples read or fail cleanly.
 #[test]
 fn damaged_samples_never_panic() {
-    let samples = [("hwp", hangul_samples::hwp(false)), ("hwp", hangul_samples::hwp(true)), ("hwpx", hangul_samples::hwpx())];
+    let samples = [("hwpx", hangul_samples::hwpx())];
     let mut seed = 0x9E37_79B9_7F4A_7C15u64;
     for (ext, bytes) in &samples {
         for cut in (0..bytes.len()).step_by(97) {
@@ -130,7 +108,7 @@ fn damaged_samples_never_panic() {
     }
 }
 
-/// Damaged records inside a well-formed container: the record streams themselves are hostile.
+/// Junk parts inside a well-formed container: the parts themselves are hostile.
 #[test]
 fn hostile_records_never_panic() {
     let mut seed = 0x2545_F491_4F6C_DD1Du64;
@@ -144,19 +122,7 @@ fn hostile_records_never_panic() {
                     seed as u8
                 })
                 .collect();
-            let mut comp = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
-            let mut header = b"HWP Document File".to_vec();
-            header.resize(32, 0);
-            header.extend(0x0500_0000u32.to_le_bytes());
-            header.extend(0u32.to_le_bytes());
-            header.resize(256, 0);
-            comp.create_storage("/BodyText").unwrap();
-            for (name, data) in [("/FileHeader", &header), ("/DocInfo", &junk), ("/BodyText/Section0", &junk)] {
-                std::io::Write::write_all(&mut comp.create_stream(name).unwrap(), data).unwrap();
-            }
-            let bytes = comp.into_inner().into_inner();
-            let _ = hwp::import(&bytes);
-            // The same junk as a HWPX section and header.
+            // Junk as a HWPX section and header.
             let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
             let o = zip::write::SimpleFileOptions::default();
             for name in ["Contents/header.xml", "Contents/section0.xml"] {
@@ -192,10 +158,6 @@ proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig { cases: 64, ..Default::default() })]
     #[test]
     fn random_bytes_never_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..2048)) {
-        let _ = hwp::import(&bytes);
         let _ = hwpx::import(&bytes);
-        let mut ole = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
-        ole.extend(&bytes);
-        let _ = hwp::import(&ole);
     }
 }

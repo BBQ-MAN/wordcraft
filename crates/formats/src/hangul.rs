@@ -1,8 +1,8 @@
-//! What the two Hangul (Hancom Office) readers share — [`crate::hwp`] (HWP 5.0 binary) and
-//! [`crate::hwpx`] (HWPX / OWPML, KS X 6101): both formats keep the same concepts (character
-//! shapes, paragraph shapes and border fills referenced by id from runs, paragraphs and cells;
-//! tables as cells with an address and spans), so each reader decodes its own syntax into the
-//! small "raw" shapes below and this module turns them into the document model.
+//! Hangul (Hancom Office) concepts and their mapping to the document model, for
+//! [`crate::hwpx`] (HWPX / OWPML, KS X 6101): character shapes, paragraph shapes and border fills
+//! referenced by id from runs, paragraphs and cells; tables as cells with an address and spans.
+//! The reader decodes its syntax into the small "raw" shapes below and this module turns them
+//! into the document model. Line types and underline shapes use Hangul's numeric codes.
 
 use std::sync::Arc;
 
@@ -26,21 +26,13 @@ pub(crate) fn pt(v: f64) -> f32 {
     ((v / 100.0) as f32).clamp(-20_000.0, 20_000.0)
 }
 
-/// Hangul's border widths (HWP 5.0 line-width codes), millimetres.
-const WIDTHS_MM: [f32; 16] = [0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0];
-
-/// A border width code to points.
-pub(crate) fn width_code_pt(code: u8) -> f32 {
-    WIDTHS_MM.get(usize::from(code)).copied().unwrap_or(0.12) * 72.0 / 25.4
-}
-
 /// An OWPML width (`"0.12 mm"`) to points.
 pub(crate) fn width_mm_pt(s: &str) -> f32 {
     let n: f32 = s.trim().trim_end_matches("mm").trim().parse().unwrap_or(0.12);
     (if n.is_finite() { n.clamp(0.0, 10.0) } else { 0.12 }) * 72.0 / 25.4
 }
 
-/// A border line type (HWP 5.0 code: 0 none, 1 solid, 2 dash, 3 dot, 4 dash-dot, 5 dash-dot-dot,
+/// A border line type (Hangul code: 0 none, 1 solid, 2 dash, 3 dot, 4 dash-dot, 5 dash-dot-dot,
 /// 6 long dash, 7 circle, 8 double, 9/10 thin-thick doubles, 11 triple, 12/13 waves, 14+ 3D).
 pub(crate) fn line_style(code: u8) -> BorderStyle {
     match code {
@@ -55,7 +47,7 @@ pub(crate) fn line_style(code: u8) -> BorderStyle {
     }
 }
 
-/// The HWP 5.0 line type code of an OWPML line type name.
+/// Hangul's numeric line type code of an OWPML line type name.
 pub(crate) fn line_code(name: &str) -> u8 {
     match name {
         "NONE" => 0,
@@ -74,15 +66,6 @@ pub(crate) fn line_code(name: &str) -> u8 {
         "DOUBLE_WAVE" => 13,
         _ => 1,
     }
-}
-
-/// A HWP colour (`0x00BBGGRR`); `None` for "no colour" (`0xFFFFFFFF`).
-pub(crate) fn colorref(v: u32) -> Option<Rgb> {
-    if v >> 24 != 0 {
-        return None;
-    }
-    let [r, g, b, _] = v.to_le_bytes();
-    Some(Rgb(r, g, b))
 }
 
 /// An OWPML colour (`#RRGGBB`, `#AARRGGBB` or `none`).
@@ -115,7 +98,7 @@ impl BorderFill {
     }
 }
 
-/// A character shape, as both formats give it.
+/// A character shape.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RawChar {
     /// Hangul (East Asian) and Latin faces.
@@ -128,7 +111,7 @@ pub(crate) struct RawChar {
     pub spacing: i32,
     pub bold: bool,
     pub italic: bool,
-    /// Underline line shape (HWP 5.0 underline shape code: 0 solid, 1 dash, 2 dot…).
+    /// Underline line shape (Hangul underline shape code: 0 solid, 1 dash, 2 dot…).
     pub underline: Option<u8>,
     pub strike: bool,
     pub sup: bool,
@@ -194,7 +177,7 @@ pub(crate) enum RawLine {
     Between(f32),
 }
 
-/// A paragraph shape, as both formats give it; lengths in points.
+/// A paragraph shape; lengths in points.
 #[derive(Clone, Debug)]
 pub(crate) struct RawPara {
     /// 0 justify, 1 left, 2 right, 3 center, 4 distribute, 5 split.
@@ -216,7 +199,7 @@ pub(crate) struct RawPara {
 }
 
 /// A tab stop at `pos` points of kind `kind` (0 left, 1 right, 2 center, 3 decimal) with the
-/// leader of line type `leader` (HWP 5.0 line code; 0 none).
+/// leader of line type `leader` (Hangul line code; 0 none).
 pub(crate) fn tab(pos: f32, kind: u8, leader: u8) -> TabStop {
     TabStop {
         pos: pos.clamp(0.0, 2000.0),
@@ -403,7 +386,7 @@ impl Story {
     }
 }
 
-/// A table cell as both formats give it: its address, spans and size (points), its formatting
+/// A table cell: its address, spans and size (points), its formatting
 /// and its content.
 pub(crate) struct RawCell {
     pub row: usize,

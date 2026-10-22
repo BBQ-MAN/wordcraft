@@ -7,8 +7,8 @@
 //! paragraphs (`hp:p`), runs (`hp:run`), tables (`hp:tbl`) and cells (`hp:tc`) refer to by id,
 //! and `BinData/` the pictures.
 //!
-//! Read: the same as [`crate::hwp`] — text, character and paragraph formatting, tables with
-//! merged cells and cell borders, page setup and columns, pictures, headers, footers, page
+//! Read: text, character and paragraph formatting, tab stops, tables with merged cells and cell
+//! borders, page setup and columns, pictures, headers, footers, page
 //! numbers, footnotes and endnotes, and the text of text boxes. Encrypted packages are refused
 //! with a clear error. Bounded: entry sizes, XML depth, nesting, parts and picture bytes are
 //! capped, so hostile input gives an error or a best-effort document, never a panic.

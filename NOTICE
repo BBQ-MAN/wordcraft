@@ -95,14 +95,9 @@ list (author, source, license) is in ATTRIBUTION.md.
     FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
     OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
     DEALINGS IN THE SOFTWARE.
-- Hangul document import (crates/formats/src/hwp.rs, hwpx.rs, hangul.rs) is written from Hancom's
-  published HWP 5.0 file format document and the OWPML (KS X 6101) schema. Hancom asks
-  implementers of its published format to state:
-
-    본 제품은 한글과컴퓨터의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
-
-  Record layouts and unit conventions the published document leaves unclear (paragraph lengths
-  stored at twice HWPUNIT, the HWPX HwpUnitChar switch) were checked against rhwp
+- Hangul HWPX import (crates/formats/src/hwpx.rs, hangul.rs) is written from the OWPML
+  (KS X 6101) schema. The unit convention the schema leaves unclear (the HwpUnitChar switch:
+  which lengths are in HWPUNIT and which at twice that) was checked against rhwp
   (https://github.com/edwardkim/rhwp), used under the MIT License:
 
     Copyright (c) 2025-2026 Edward Kim
