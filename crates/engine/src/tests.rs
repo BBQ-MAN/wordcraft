@@ -1712,6 +1712,19 @@ fn hangul_style_create_table_sets_width_height_and_look() {
     assert_eq!(table(&sess).props.width, Some(200.0));
     assert!(sess.run("insert.table", &json!({"rows": 1, "cols": 2, "width": "wide"})).is_err());
     assert!(sess.run("insert.table", &json!({"rows": 1, "cols": 2, "look": "fancy"})).is_err());
+    // A supplied look or row height that isn't valid is refused, not ignored.
+    for bad in [json!({"look": 1}), json!({"rowHeight": 0}), json!({"rowHeight": -5}), json!({"rowHeight": "tall"})] {
+        let mut params = json!({"rows": 1, "cols": 2});
+        params.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        assert!(sess.run("insert.table", &params).is_err(), "{params}");
+    }
+
+    // Fit to the column in a two-column section: the column's width, not the section's.
+    let mut sess = s();
+    run(&mut sess, "layout.columns", json!({"count": 2, "space": 36}));
+    let half = (crate::cmd::page::sect(&sess).text_width() - 36.0) / 2.0;
+    run(&mut sess, "insert.table", json!({"rows": 1, "cols": 2, "width": "column"}));
+    assert!((table(&sess).grid.iter().sum::<f32>() - half).abs() < 0.01);
 }
 
 #[test]

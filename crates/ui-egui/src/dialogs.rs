@@ -1164,9 +1164,10 @@ impl Dialog {
                 rows: 5,
                 cols: 5,
                 fit: "column",
-                width: wordcraft_engine::cmd::page::sect(&app.session).text_width(),
+                // Lengths in the interface unit, as the fields show them.
+                width: wordcraft_engine::cmd::page::sect(&app.session).text_width() / crate::options::unit().pt_per_unit(),
                 at_least: false,
-                height: 20.0,
+                height: 20.0 / crate::options::unit().pt_per_unit(),
                 hangul: true,
             },
             "pageSetup" => {
@@ -2221,7 +2222,8 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         }
         Dialog::CreateTable { rows, cols, fit, width, at_least, height, hangul } => {
             let unit = crate::options::unit();
-            let speed = 3.6 / unit.pt_per_unit();
+            let ppu = unit.pt_per_unit();
+            let speed = 3.6 / ppu;
             egui::Grid::new("ct").num_columns(2).show(ui, |ui| {
                 ui.label(tl!("Number of rows:"));
                 ui.add(egui::DragValue::new(rows).range(1..=1000));
@@ -2238,14 +2240,20 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
                     ui.radio_value(fit, "column", tl!("Fit to column"));
                     ui.radio_value(fit, "paragraph", tl!("Fit to paragraph"));
                     ui.radio_value(fit, "custom", tl!("Custom"));
-                    ui.add_enabled(*fit == "custom", egui::DragValue::new(width).speed(speed).range(7.2..=1584.0).measure(unit).max_decimals(2));
+                    ui.add_enabled(
+                        *fit == "custom",
+                        egui::DragValue::new(width).speed(speed).range(7.2 / ppu..=1584.0 / ppu).measure(unit).max_decimals(2),
+                    );
                 });
                 ui.end_row();
                 ui.label(tl!("Height:"));
                 ui.horizontal(|ui| {
                     ui.radio_value(at_least, false, tl!("Auto"));
                     ui.radio_value(at_least, true, tl!("At least"));
-                    ui.add_enabled(*at_least, egui::DragValue::new(height).speed(speed).range(2.0..=1584.0).measure(unit).max_decimals(2));
+                    ui.add_enabled(
+                        *at_least,
+                        egui::DragValue::new(height).speed(speed).range(2.0 / ppu..=1584.0 / ppu).measure(unit).max_decimals(2),
+                    );
                 });
                 ui.end_row();
             });
@@ -2253,9 +2261,9 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             let (ok, cancel) = buttons(ui, tl!("OK"));
             if ok {
                 let mut params = json!({"rows": *rows, "cols": *cols});
-                params["width"] = if *fit == "custom" { json!(*width) } else { json!(*fit) };
+                params["width"] = if *fit == "custom" { json!(*width * ppu) } else { json!(*fit) };
                 if *at_least {
-                    params["rowHeight"] = json!(*height);
+                    params["rowHeight"] = json!(*height * ppu);
                 }
                 if *hangul {
                     params["look"] = json!("hangul");
