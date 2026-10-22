@@ -514,9 +514,9 @@ fn korean_recovery_link_and_save_messages_are_translated() {
         assert_eq!(tr(ko, source), expected, "{source}");
     }
     assert_eq!(fmt(tr(ko, "Discard the recovery copy of {name}?"), &[("name", "보고서.docx")]), "보고서.docx의 복구 사본을 삭제할까요?");
-    assert_ne!(
-        tr(ko, "Couldn't save {name}, so it is still open and nothing was lost: {error}"),
-        "Couldn't save {name}, so it is still open and nothing was lost: {error}"
+    assert_eq!(
+        fmt(tr(ko, "Couldn't save {name}, so it is still open and nothing was lost: {error}"), &[("name", "보고서.docx"), ("error", "디스크 오류")]),
+        "보고서.docx을(를) 저장하지 못했습니다. 문서는 열려 있으며 잃은 내용은 없습니다. 오류: 디스크 오류"
     );
 }
 

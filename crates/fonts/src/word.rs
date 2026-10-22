@@ -136,7 +136,7 @@ fn substitutes_by_name(family: &str) -> (&'static [&'static str], bool) {
     ];
     let f = family.to_ascii_lowercase();
     if let Some(serif) = korean_serif(&f) {
-        return if serif { KO_SERIF } else { KO_SANS };
+        return (if serif { KO_SERIF } else { KO_SANS }, true);
     }
     if is_thai_serif(&f) {
         return (THAI_SERIF, true);
@@ -309,9 +309,9 @@ fn korean_serif(f: &str) -> Option<bool> {
     const SANS: &[&str] =
         &["gulim", "gulimche", "dotum", "dotumche", "malgun gothic", "hcr dotum", "hcr dotumext", "nanumgothic", "apple sd gothic neo"];
     let has = |words: &[&str]| words.iter().any(|w| f.contains(w));
-    if SERIF.contains(&f) || has(&["바탕", "궁서", "명조", "myeongjo", "serif kr", "serif cjk kr"]) {
+    if SERIF.contains(&f) || has(&["바탕", "궁서", "명조", "myeongjo", "serif kr", "serif cjk kr", "source han serif k"]) {
         Some(true)
-    } else if SANS.contains(&f) || has(&["굴림", "돋움", "고딕", "sans kr", "sans cjk kr"]) {
+    } else if SANS.contains(&f) || has(&["굴림", "돋움", "고딕", "sans kr", "sans cjk kr", "source han sans k"]) {
         Some(false)
     } else {
         None
@@ -641,14 +641,37 @@ mod tests {
 
     #[test]
     fn korean_fonts_substitute_korean_faces_keeping_serif_and_sans() {
-        for f in ["Batang", "바탕", "BatangChe", "바탕체", "Gungsuh", "궁서", "함초롬바탕", "HCR Batang", "Noto Serif KR", "나눔명조"]
-        {
+        for f in [
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "Gungsuh",
+            "궁서",
+            "함초롬바탕",
+            "HCR Batang",
+            "Noto Serif KR",
+            "나눔명조",
+            "Source Han Serif K",
+        ] {
             let list = substitutes(f);
             assert!(list.contains(&"Noto Serif CJK KR") && list.contains(&"NanumMyeongjo"), "{f}");
             // A Korean serif first, the Korean sans faces only after the serif ones.
             assert!(list.iter().position(|x| *x == "Noto Serif KR") < list.iter().position(|x| *x == "Malgun Gothic"), "{f}");
         }
-        for f in ["Gulim", "굴림", "Dotum", "돋움", "DotumChe", "Malgun Gothic", "맑은 고딕", "함초롬돋움", "HCR Dotum", "NanumGothic"] {
+        for f in [
+            "Gulim",
+            "굴림",
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "Malgun Gothic",
+            "맑은 고딕",
+            "함초롬돋움",
+            "HCR Dotum",
+            "NanumGothic",
+            "Source Han Sans K",
+        ] {
             let list = substitutes(f);
             assert_eq!(list.first(), Some(&"Malgun Gothic"), "{f}");
             assert!(list.contains(&"Noto Sans CJK KR") && list.contains(&"NanumGothic") && !list.contains(&"Batang"), "{f}");
