@@ -399,16 +399,32 @@ pub(crate) struct RawCell {
     pub blocks: Blocks,
 }
 
-/// Lay out cells given by address on a grid: column widths from the cells' widths, horizontal
-/// spans as cell spans, vertical spans as merged cells, holes as empty cells. `None` without
-/// cells.
-pub(crate) fn table(mut cells: Vec<RawCell>, props: TableProps) -> Option<Table> {
-    // Clip cells to the grid's limits; the grid is as big as its cells say.
-    cells.retain(|c| c.row < MAX_ROWS && c.col < MAX_COLS);
-    for c in &mut cells {
-        c.rows = c.rows.clamp(1, MAX_ROWS - c.row);
+/// Grid slots a table may have beyond [`SLOTS_PER_CELL`] per cell read: a few cells can't ask
+/// for a huge grid of empty cells.
+const SLOTS_BASE: usize = 4096;
+/// Grid slots each cell read may account for (a cell merged across many rows and columns).
+const SLOTS_PER_CELL: usize = 64;
+
+/// Clip cells to `rows` rows and `MAX_COLS` columns: drop cells that start outside, trim spans
+/// that run past the edge.
+fn clip(cells: &mut Vec<RawCell>, rows: usize) {
+    cells.retain(|c| c.row < rows && c.col < MAX_COLS);
+    for c in cells.iter_mut() {
+        c.rows = c.rows.clamp(1, rows - c.row);
         c.cols = c.cols.clamp(1, MAX_COLS - c.col);
     }
+}
+
+/// Lay out cells given by address on a grid: column widths from the cells' widths, horizontal
+/// spans as cell spans, vertical spans as merged cells, holes as empty cells. The grid keeps to
+/// the row count the file declares (`declared_rows`, when it gives one) and to a number of slots
+/// in proportion to the cells read, so hostile addresses and spans can't build a huge grid.
+/// `None` without cells.
+pub(crate) fn table(mut cells: Vec<RawCell>, props: TableProps, declared_rows: Option<usize>) -> Option<Table> {
+    clip(&mut cells, declared_rows.filter(|r| *r > 0).unwrap_or(MAX_ROWS).min(MAX_ROWS));
+    let cols = cells.iter().map(|c| c.col + c.cols).max()?;
+    let slots = SLOTS_BASE.saturating_add(cells.len().saturating_mul(SLOTS_PER_CELL));
+    clip(&mut cells, (slots / cols.max(1)).clamp(1, MAX_ROWS));
     let rows = cells.iter().map(|c| c.row + c.rows).max()?;
     let cols = cells.iter().map(|c| c.col + c.cols).max()?;
     // Which cell covers each grid slot (the first one read wins an overlap).
@@ -564,6 +580,8 @@ pub(crate) fn page(w: f64, h: f64, landscape: bool, m: [f64; 7]) -> SectionProps
     if !(pw >= 72.0 && ph >= 72.0) {
         (pw, ph) = (595.3, 841.9);
     }
+    // At most 22 inches, as Word and the other readers allow: hostile sizes never reach layout.
+    let (pw, ph) = (pw.min(1584.0), ph.min(1584.0));
     let (pw, ph) = if landscape { (pw.max(ph), pw.min(ph)) } else { (pw, ph) };
     let mut s = SectionProps {
         page_w: pw,

@@ -154,6 +154,42 @@ fn deep_and_wide_hwpx() {
     assert!(doc.body.iter().any(|b| b.as_table().is_some()));
 }
 
+/// A HWPX package of one section.
+fn package(section: &str) -> Vec<u8> {
+    let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let o = zip::write::SimpleFileOptions::default();
+    for (name, text) in [("mimetype", "application/hwp+zip"), ("Contents/header.xml", "<hh:head/>"), ("Contents/section0.xml", section)] {
+        z.start_file(name, o).unwrap();
+        std::io::Write::write_all(&mut z, text.as_bytes()).unwrap();
+    }
+    z.finish().unwrap().into_inner()
+}
+
+/// A table keeps to the rows the file declares and to a grid in proportion to its cells, and a
+/// page to Word's 22 inches, whatever the addresses, spans and sizes say.
+#[test]
+fn table_grid_and_page_stay_bounded() {
+    let cell = |row: u32, rows: u32| {
+        format!(
+            r#"<hp:tc><hp:subList><hp:p><hp:run><hp:t>x</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="0" rowAddr="{row}"/><hp:cellSpan colSpan="1" rowSpan="{rows}"/><hp:cellSz width="7200" height="1000"/></hp:tc>"#
+        )
+    };
+    let table = |attrs: &str, cells: String| format!(r#"<hp:p><hp:run><hp:tbl {attrs}><hp:tr>{cells}</hp:tr></hp:tbl></hp:run></hp:p>"#);
+    let section = format!(
+        r#"<hs:sec xmlns:hs="s" xmlns:hp="p"><hp:p><hp:run><hp:secPr><hp:pagePr width="99999999" height="99999999"><hp:margin left="5669" right="5669" top="4252" bottom="4252"/></hp:pagePr></hp:secPr></hp:run></hp:p>{}{}</hs:sec>"#,
+        // One cell merged down 30,000 rows, no declared row count: the grid stays small.
+        table("", cell(0, 30_000)),
+        // A declared row count of 2: a cell merged down 100 rows and a cell below them are cut.
+        table(r#"rowCnt="2" colCnt="1""#, format!("{}{}", cell(0, 100), cell(5, 1))),
+    );
+    let doc = hwpx::import(&package(&section)).unwrap();
+    let tables: Vec<_> = doc.body.iter().filter_map(|b| b.as_table()).collect();
+    assert_eq!(tables.len(), 2);
+    assert!(tables[0].rows.len() <= 4096 + 64, "{} rows", tables[0].rows.len());
+    assert_eq!(tables[1].rows.len(), 2);
+    assert!(doc.sections().iter().all(|(_, s)| s.page_w <= 1584.0 && s.page_h <= 1584.0));
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig { cases: 64, ..Default::default() })]
     #[test]
