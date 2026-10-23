@@ -585,7 +585,7 @@ impl Sec<'_, '_> {
             align,
             ..Default::default()
         };
-        hangul::table(cells, props)
+        hangul::table(cells, props, t.attr("rowCnt").and_then(|r| r.trim().parse().ok()))
     }
 
     /// A picture (`hp:pic`): its image (`hc:img`) shown inline at the picture's size.

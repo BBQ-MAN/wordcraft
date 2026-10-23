@@ -156,8 +156,14 @@ fn stream(comp: &mut Comp<'_>, path: &str) -> Option<Vec<u8>> {
 
 /// Inflate a compressed stream (raw deflate; zlib-wrapped streams are accepted too).
 fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
-    miniz_oxide::inflate::decompress_to_vec_with_limit(data, MAX_INFLATE)
-        .or_else(|_| miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, MAX_INFLATE))
+    inflate_within(data, MAX_INFLATE)
+}
+
+/// [`inflate`], stopping at `limit` bytes of output: a stream that inflates to more is refused
+/// before it is all inflated.
+fn inflate_within(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
+    miniz_oxide::inflate::decompress_to_vec_with_limit(data, limit)
+        .or_else(|_| miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, limit))
         .map_err(|e| format!("HWP: a compressed stream is damaged ({:?})", e.status))
 }
 
@@ -652,7 +658,7 @@ impl Body<'_, '_> {
         let ti = kids.iter().position(|r| r.tag == TABLE && r.level == direct)?;
         let mut r = Rd::new(kids.get(ti)?.data);
         r.u32();
-        r.u16();
+        let declared_rows = usize::from(r.u16());
         r.u16();
         r.i16();
         let (l, rt, t, b) = (r.i16(), r.i16(), r.i16(), r.i16());
@@ -680,7 +686,7 @@ impl Body<'_, '_> {
         };
         let m = |v: i16| pt(f64::from(v)).clamp(0.0, 100.0);
         let props = TableProps { cell_margins: Some([m(t), m(l), m(b), m(rt)]), fixed: true, align, ..Default::default() };
-        hangul::table(cells, props)
+        hangul::table(cells, props, Some(declared_rows))
     }
 
     fn cell(&mut self, recs: &[Rec], depth: usize) -> RawCell {
@@ -758,9 +764,29 @@ impl Body<'_, '_> {
         let raw = [b.ext.clone(), b.ext.to_ascii_lowercase(), b.ext.to_ascii_uppercase()]
             .iter()
             .find_map(|ext| stream(self.comp, &format!("/BinData/{name}.{ext}")))?;
-        let data = if b.compress == 1 || (b.compress == 0 && self.compressed) { inflate(&raw).unwrap_or(raw) } else { raw };
+        // Inflate no further than the picture budget left: a bigger picture is refused before it
+        // is all inflated, not after.
+        let room = usize::try_from(*self.room).unwrap_or(usize::MAX).min(MAX_INFLATE);
+        let compressed = b.compress == 1 || (b.compress == 0 && self.compressed);
+        // A stream that doesn't inflate is taken as stored, as Hangul writes some that way.
+        let data = match compressed.then(|| inflate_within(&raw, room).ok()).flatten() {
+            Some(data) => data,
+            None if raw.len() <= room => raw,
+            None => return None,
+        };
         let ext = crate::model::sniff_image(&data)?;
         *self.room = self.room.checked_sub(data.len() as u64)?;
         Some(self.doc.add_media(data, ext))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A stream that inflates past the limit is refused, not inflated whole and then dropped.
+    #[test]
+    fn inflate_stops_at_the_limit() {
+        let packed = miniz_oxide::deflate::compress_to_vec(&[7u8; 10_000], 6);
+        assert_eq!(super::inflate_within(&packed, 20_000).map(|v| v.len()), Ok(10_000));
+        assert!(super::inflate_within(&packed, 1_000).is_err());
     }
 }
