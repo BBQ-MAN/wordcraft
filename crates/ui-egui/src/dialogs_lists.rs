@@ -32,9 +32,9 @@ const STYLES: [(&str, &str); 14] = [
 ];
 
 /// Is style `k` offered for a level now set to `current`? The Korean styles are, with a Korean
-/// interface or when the level already uses one.
-fn offered(k: &str, current: &str) -> bool {
-    !matches!(k, "ganada" | "chosung" | "koreanCounting" | "koreanLegal") || k == current || crate::i18n::current().prefers_korean()
+/// interface (`korean`) or when the level already uses one.
+fn offered(k: &str, current: &str, korean: bool) -> bool {
+    !matches!(k, "ganada" | "chosung" | "koreanCounting" | "koreanLegal") || k == current || korean
 }
 
 /// One level of the Define New Multilevel List form. Positions are in the interface unit.
@@ -207,7 +207,8 @@ pub fn define_list(app: &mut WordApp, ui: &mut Ui, f: &mut ListForm) -> bool {
         let current = STYLES.iter().find(|(k, _)| *k == l.format).map(|(_, s)| *s).unwrap_or("");
         egui::ComboBox::from_id_salt("mll_style").selected_text(style_label(current)).show_ui(ui, |ui| {
             let was = l.format.clone();
-            for (k, s) in STYLES.into_iter().filter(|(k, _)| offered(k, &was)) {
+            let korean = crate::i18n::current().prefers_korean();
+            for (k, s) in STYLES.into_iter().filter(|(k, _)| offered(k, &was, korean)) {
                 if ui.selectable_label(l.format == k, style_label(s)).clicked() {
                     // A new style puts this level's number in the text if it had none (a bullet
                     // its character).
@@ -625,13 +626,9 @@ mod tests {
     #[test]
     fn korean_number_styles_are_offered_with_a_korean_interface() {
         let korean = ["ganada", "chosung", "koreanCounting", "koreanLegal"];
-        assert!(korean.iter().all(|k| !super::offered(k, "decimal")) && super::offered("decimal", "decimal"));
-        assert!(super::offered("ganada", "ganada") && !super::offered("chosung", "ganada"));
-        let ko = crate::i18n::Lang::from_code("ko");
-        crate::i18n::set_current(ko.unwrap_or(crate::i18n::Lang::EN));
-        let offered = korean.iter().all(|k| super::offered(k, "decimal"));
-        crate::i18n::set_current(crate::i18n::Lang::EN);
-        assert!(offered);
+        assert!(korean.iter().all(|k| !super::offered(k, "decimal", false)) && super::offered("decimal", "decimal", false));
+        assert!(super::offered("ganada", "ganada", false) && !super::offered("chosung", "ganada", false));
+        assert!(korean.iter().all(|k| super::offered(k, "decimal", true)));
         let mut a = app();
         a.run("text.insert", json!({"text": "Intro"})).unwrap();
         a.run("list.define", json!({})).unwrap();
