@@ -35,6 +35,10 @@ const MAX_STREAM: u64 = 256 << 20;
 const MAX_INFLATE: usize = 512 << 20;
 /// Most `BodyText/Section{n}` streams read.
 const MAX_SECTIONS: usize = 1000;
+/// Most records read from one stream. A record costs about 24 bytes in the list, so this keeps
+/// a stream of empty records (4 bytes each, deflating to almost nothing) to about 100 MiB; a long
+/// real section has a few hundred thousand.
+const MAX_RECORDS: usize = 4_000_000;
 
 // Record tags (HWPTAG_BEGIN = 0x10).
 const ID_MAPPINGS: u16 = 0x11;
@@ -125,11 +129,17 @@ struct Rec<'a> {
     data: &'a [u8],
 }
 
-/// The records of a stream; a truncated record ends the list.
+/// The records of a stream; a truncated record ends the list, and so does the
+/// [`MAX_RECORDS`]th, as if the stream ended there.
 fn records(buf: &[u8]) -> Vec<Rec<'_>> {
+    records_within(buf, MAX_RECORDS)
+}
+
+/// [`records`], at most `max` of them.
+fn records_within(buf: &[u8], max: usize) -> Vec<Rec<'_>> {
     let mut out = Vec::new();
     let mut r = Rd::new(buf);
-    while r.remaining() >= 4 {
+    while r.remaining() >= 4 && out.len() < max {
         let h = r.u32();
         let mut size = (h >> 20) as usize;
         if size == 0xFFF {
@@ -782,6 +792,18 @@ impl Body<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+    /// A stream of empty records stops at the cap, as if it ended there; below it nothing changes.
+    #[test]
+    fn records_stop_at_the_cap() {
+        let empty = [0u8; 4 * 1000];
+        assert_eq!(super::records_within(&empty, 100).len(), 100);
+        assert_eq!(super::records_within(&empty, 5000).len(), 1000);
+        // A record with data: tag 66, level 1, 3 bytes.
+        let one = [0x42, 0x04, 0x30, 0x00, 1, 2, 3];
+        let recs = super::records_within(&one, 1);
+        assert_eq!(recs.iter().map(|r| (r.tag, r.level, r.data)).collect::<Vec<_>>(), [(66, 1, &[1u8, 2, 3][..])]);
+    }
+
     /// A stream that inflates past the limit is refused, not inflated whole and then dropped.
     #[test]
     fn inflate_stops_at_the_limit() {

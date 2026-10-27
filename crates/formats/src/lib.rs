@@ -100,6 +100,8 @@ pub fn export_with(ext: &str, doc: &Document, opts: &ExportOptions) -> Option<Re
 }
 
 #[cfg(test)]
+mod test_log;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_hangul;

@@ -11,9 +11,10 @@
 //! borders, page setup and columns, pictures, headers, footers, page
 //! numbers, footnotes and endnotes, and the text of text boxes. Encrypted packages are refused
 //! with a clear error. Bounded: entry sizes, XML depth, nesting, parts and picture bytes are
-//! capped, so hostile input gives an error or a best-effort document, never a panic.
+//! capped, and the XML bytes, elements and text one import builds share one budget, so hostile
+//! input gives an error or a best-effort document, never a panic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 
 use wordcraft_doc::para::{Float, InlineObject, LINE_BREAK, NBSP, NoteKind, SOFT_HYPHEN};
@@ -29,6 +30,14 @@ const MIME: &str = "application/hwp+zip";
 const MAX_XML_DEPTH: usize = 256;
 /// Most sections read.
 const MAX_SECTIONS: usize = 1000;
+/// Most XML nodes (elements and text runs) one import builds, over the manifest, header,
+/// version file and every section together. Each costs about a hundred bytes of heap, so this
+/// keeps the trees to a few hundred MiB; a long real document has a few hundred thousand.
+const MAX_NODES: usize = 3_000_000;
+/// Most bytes of element names, attributes and text one import keeps in its XML trees.
+const MAX_TEXT: usize = 128 << 20;
+/// Most inflated XML bytes one import parses (two of the largest entries `read_entry` allows).
+const MAX_XML: usize = 512 << 20;
 
 type Zip<'a> = zip::ZipArchive<Cursor<&'a [u8]>>;
 
@@ -86,15 +95,52 @@ impl El {
     }
 }
 
-/// Parse XML into a tree; elements past [`MAX_XML_DEPTH`] are dropped. `None` without a root.
-fn tree(xml: &[u8]) -> Option<El> {
+/// What one import may still build from its XML: every part's tree draws on it, so repeated or
+/// huge parts can't add up past it (hostile input: a few hundred KB of deflate inflate to
+/// hundreds of MiB of `<a/>`).
+pub(crate) struct Budget {
+    nodes: usize,
+    text: usize,
+    xml: usize,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Budget::new(MAX_NODES, MAX_TEXT, MAX_XML)
+    }
+}
+
+impl Budget {
+    pub(crate) fn new(nodes: usize, text: usize, xml: usize) -> Self {
+        Budget { nodes, text, xml }
+    }
+
+    /// Take one node holding `text` bytes (names, attributes, text), or say why not.
+    fn node(&mut self, text: usize) -> Result<(), String> {
+        let (Some(nodes), Some(left)) = (self.nodes.checked_sub(1), self.text.checked_sub(text)) else {
+            return Err("HWPX: the document has too many elements or too much text to open".into());
+        };
+        (self.nodes, self.text) = (nodes, left);
+        Ok(())
+    }
+}
+
+/// Parse XML into a tree; elements past [`MAX_XML_DEPTH`] are dropped. `Ok(None)` without a
+/// root; an error once the XML, its nodes or its text go past what `budget` has left.
+fn tree(xml: &[u8], budget: &mut Budget) -> Result<Option<El>, String> {
+    budget.xml = budget.xml.checked_sub(xml.len()).ok_or("HWPX: the document's parts are too large to open")?;
     let mut stack: Vec<El> = Vec::new();
     let mut root = None;
     let mut skip = 0usize;
+    let mut err = None;
     events(xml, |ev| match ev {
+        // Past the budget nothing more is built (the parse itself is bounded by the entry size).
+        _ if err.is_some() => {}
         Ev::Start(q, attrs) => {
             if skip > 0 || stack.len() >= MAX_XML_DEPTH {
                 skip += 1;
+            } else if let Err(e) = budget.node(attrs.iter().fold(q.len(), |n, (k, v)| n.saturating_add(k.len()).saturating_add(v.len()))) {
+                err = Some(e);
             } else {
                 stack.push(El { name: local(&q).to_string(), attrs, kids: Vec::new() });
             }
@@ -117,10 +163,16 @@ fn tree(xml: &[u8]) -> Option<El> {
             if skip == 0
                 && let Some(top) = stack.last_mut()
             {
-                top.kids.push(Node::Text(t));
+                match budget.node(t.len()) {
+                    Ok(()) => top.kids.push(Node::Text(t)),
+                    Err(e) => err = Some(e),
+                }
             }
         }
     });
+    if let Some(e) = err {
+        return Err(e);
+    }
     // Unclosed elements at the end of a truncated file still count.
     while let Some(e) = stack.pop() {
         match stack.last_mut() {
@@ -128,7 +180,7 @@ fn tree(xml: &[u8]) -> Option<El> {
             None => root = root.or(Some(e)),
         }
     }
-    root
+    Ok(root)
 }
 
 /// What `header.xml` gives the sections, by id.
@@ -258,10 +310,10 @@ fn para_pr(e: &El, fills: &HashMap<u32, BorderFill>, tabs: &HashMap<u32, Vec<Tab
     }
 }
 
-fn header(xml: &[u8], physical: bool) -> Header {
+fn header(xml: &[u8], physical: bool, budget: &mut Budget) -> Result<Header, String> {
     let mut h = Header::default();
-    let Some(root) = tree(xml) else { return h };
-    let Some(refs) = root.find("refList") else { return h };
+    let Some(root) = tree(xml, budget)? else { return Ok(h) };
+    let Some(refs) = root.find("refList") else { return Ok(h) };
     let mut fonts: [HashMap<u32, String>; 2] = Default::default();
     for ff in refs.child("fontfaces").into_iter().flat_map(|f| f.children("fontface")) {
         let g = match ff.attr("lang") {
@@ -298,21 +350,22 @@ fn header(xml: &[u8], physical: bool) -> Header {
             h.paras.insert(id, para_pr(p, &h.fills, &tabs, physical).shape());
         }
     }
-    h
+    Ok(h)
 }
 
 /// Does the package's `version.xml` say OWPML 1.4 or later (lengths in plain HWPUNIT)?
-fn physical_units(xml: &[u8]) -> bool {
-    let Some(v) = tree(xml) else { return true };
-    let Some((major, minor)) = v.attr("xmlVersion").and_then(|s| s.split_once('.')) else { return true };
-    (major.trim().parse::<u32>().unwrap_or(1), minor.trim().parse::<u32>().unwrap_or(4)) >= (1, 4)
+fn physical_units(xml: &[u8], budget: &mut Budget) -> Result<bool, String> {
+    let Some(v) = tree(xml, budget)? else { return Ok(true) };
+    let Some((major, minor)) = v.attr("xmlVersion").and_then(|s| s.split_once('.')) else { return Ok(true) };
+    Ok((major.trim().parse::<u32>().unwrap_or(1), minor.trim().parse::<u32>().unwrap_or(4)) >= (1, 4))
 }
 
-/// The package's parts: manifest id → path, and the section paths in reading order.
-fn package(z: &mut Zip<'_>) -> (HashMap<String, String>, Vec<String>) {
+/// The package's parts: manifest id → path, and the section paths in reading order, each once.
+fn package(z: &mut Zip<'_>, budget: &mut Budget) -> Result<(HashMap<String, String>, Vec<String>), String> {
     let mut items = HashMap::new();
     let mut sections = Vec::new();
-    if let Some(root) = read_entry(z, "Contents/content.hpf").and_then(|x| tree(&x)) {
+    let hpf = read_entry(z, "Contents/content.hpf");
+    if let Some(root) = hpf.map(|x| tree(&x, budget)).transpose()?.flatten() {
         if let Some(m) = root.find("manifest") {
             for it in m.children("item") {
                 if let (Some(id), Some(href)) = (it.attr("id"), it.attr("href")) {
@@ -342,12 +395,20 @@ fn package(z: &mut Zip<'_>) -> (HashMap<String, String>, Vec<String>) {
         found.sort();
         sections = found.into_iter().map(|(_, n)| n).collect();
     }
+    // A spine may name one part many times (the same idref, or ids sharing an href): read it once.
+    let mut seen = HashSet::new();
+    sections.retain(|p| seen.insert(p.clone()));
     sections.truncate(MAX_SECTIONS);
-    (items, sections)
+    Ok((items, sections))
 }
 
 /// Read a HWPX document.
 pub fn import(bytes: &[u8]) -> Result<Document, String> {
+    import_within(bytes, Budget::default())
+}
+
+/// Read a HWPX document, building no more from its XML than `budget` allows.
+pub(crate) fn import_within(bytes: &[u8], mut budget: Budget) -> Result<Document, String> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("HWPX: not a Hangul document ({e})"))?;
     let mime = read_entry(&mut z, "mimetype");
     if mime.as_deref().is_some_and(|m| m.trim_ascii() != MIME.as_bytes()) {
@@ -357,16 +418,22 @@ pub fn import(bytes: &[u8]) -> Result<Document, String> {
         return Err("HWPX: this document is protected with a password, which WordCraft can't open yet".into());
     }
     let header_xml = read_entry(&mut z, "Contents/header.xml").ok_or("HWPX: the package has no Contents/header.xml")?;
-    let physical = read_entry(&mut z, "version.xml").is_none_or(|v| physical_units(&v));
-    let hdr = header(&header_xml, physical);
-    let (items, paths) = package(&mut z);
+    let physical = match read_entry(&mut z, "version.xml") {
+        Some(v) => physical_units(&v, &mut budget)?,
+        None => true,
+    };
+    let hdr = header(&header_xml, physical, &mut budget)?;
+    drop(header_xml);
+    let (items, paths) = package(&mut z, &mut budget)?;
     let mut doc = Document::new();
     doc.body.clear();
     let mut pictures = Pictures::new(MAX_MEDIA);
     let mut media: HashMap<String, Option<String>> = HashMap::new();
     let mut sections = Vec::new();
     for path in paths {
-        let Some(root) = read_entry(&mut z, &path).and_then(|x| tree(&x)) else { continue };
+        let Some(xml) = read_entry(&mut z, &path) else { continue };
+        let Some(root) = tree(&xml, &mut budget)? else { continue };
+        drop(xml);
         let mut s = Sec {
             hdr: &hdr,
             doc: &mut doc,
