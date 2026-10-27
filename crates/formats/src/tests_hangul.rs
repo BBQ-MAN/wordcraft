@@ -154,15 +154,74 @@ fn deep_and_wide_hwpx() {
     assert!(doc.body.iter().any(|b| b.as_table().is_some()));
 }
 
-/// A HWPX package of one section.
-fn package(section: &str) -> Vec<u8> {
+/// A ZIP of these entries.
+fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
     let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let o = zip::write::SimpleFileOptions::default();
-    for (name, text) in [("mimetype", "application/hwp+zip"), ("Contents/header.xml", "<hh:head/>"), ("Contents/section0.xml", section)] {
-        z.start_file(name, o).unwrap();
+    for (name, text) in entries {
+        z.start_file(*name, o).unwrap();
         std::io::Write::write_all(&mut z, text.as_bytes()).unwrap();
     }
     z.finish().unwrap().into_inner()
+}
+
+/// A HWPX package of one section.
+fn package(section: &str) -> Vec<u8> {
+    zip_of(&[("mimetype", "application/hwp+zip"), ("Contents/header.xml", "<hh:head/>"), ("Contents/section0.xml", section)])
+}
+
+/// A section of one paragraph.
+fn section_of(text: &str) -> String {
+    format!(r#"<hs:sec xmlns:hs="s" xmlns:hp="p"><hp:p><hp:run><hp:t>{text}</hp:t></hp:run></hp:p></hs:sec>"#)
+}
+
+/// The elements and text one import builds are bounded: past the budget the import fails
+/// cleanly instead of building a tree many times the size of the file.
+#[test]
+fn xml_tree_budget_stops_the_import() {
+    let wide = format!(r#"<hs:sec xmlns:hs="s" xmlns:hp="p">{}</hs:sec>"#, "<a/>".repeat(1000));
+    let bytes = package(&wide);
+    assert!(hwpx::import(&bytes).is_ok());
+    let err = hwpx::import_within(&bytes, hwpx::Budget::new(500, usize::MAX, usize::MAX)).unwrap_err();
+    assert!(err.starts_with("HWPX:") && err.contains("too many elements"), "{err}");
+    // Text counts too.
+    let long = package(&section_of(&"x".repeat(1000)));
+    assert!(hwpx::import_within(&long, hwpx::Budget::new(usize::MAX, 500, usize::MAX)).is_err());
+    assert!(hwpx::import_within(&long, hwpx::Budget::new(usize::MAX, 2000, usize::MAX)).is_ok());
+}
+
+/// A spine naming one section many times (the same idref, or two ids with one href) reads it once.
+#[test]
+fn repeated_spine_refs_read_a_section_once() {
+    let hpf = r#"<opf:package xmlns:opf="o"><opf:manifest><opf:item id="s0" href="Contents/section0.xml"/><opf:item id="s1" href="/Contents/section0.xml"/></opf:manifest><opf:spine><opf:itemref idref="s0"/><opf:itemref idref="s0"/><opf:itemref idref="s1"/></opf:spine></opf:package>"#;
+    let section = section_of("once");
+    let bytes = zip_of(&[
+        ("mimetype", "application/hwp+zip"),
+        ("Contents/header.xml", "<hh:head/>"),
+        ("Contents/content.hpf", hpf),
+        ("Contents/section0.xml", &section),
+    ]);
+    let doc = hwpx::import(&bytes).unwrap();
+    assert_eq!(paras(&doc).iter().filter(|p| p.text == "once").count(), 1);
+}
+
+/// Every section's inflated XML is charged to one document-wide budget.
+#[test]
+fn xml_byte_budget_spans_sections() {
+    let (a, b) = (section_of("first"), section_of("second"));
+    let bytes = zip_of(&[
+        ("mimetype", "application/hwp+zip"),
+        ("Contents/header.xml", "<hh:head/>"),
+        ("Contents/section0.xml", &a),
+        ("Contents/section1.xml", &b),
+    ]);
+    let header = "<hh:head/>".len();
+    // Room for the header and either section alone, not both.
+    let one = header + a.len().max(b.len());
+    let err = hwpx::import_within(&bytes, hwpx::Budget::new(usize::MAX, usize::MAX, one)).unwrap_err();
+    assert!(err.contains("too large"), "{err}");
+    let doc = hwpx::import_within(&bytes, hwpx::Budget::new(usize::MAX, usize::MAX, header + a.len() + b.len())).unwrap();
+    assert_eq!(paras(&doc).len(), 2);
 }
 
 /// A table keeps to the rows the file declares and to a grid in proportion to its cells, and a
