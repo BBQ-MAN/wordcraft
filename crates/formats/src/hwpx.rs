@@ -15,7 +15,7 @@
 //! input gives an error or a best-effort document, never a panic.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use wordcraft_doc::para::{Float, InlineObject, LINE_BREAK, NBSP, NoteKind, SOFT_HYPHEN};
 use wordcraft_doc::props::{Borders, CharProps, TabStop, TableProps, VAlign};
@@ -44,10 +44,14 @@ type Zip<'a> = zip::ZipArchive<Cursor<&'a [u8]>>;
 /// Is this a HWPX package (a ZIP whose `mimetype` is `application/hwp+zip`)?
 pub fn is_hwpx(bytes: &[u8]) -> bool {
     bytes.starts_with(b"PK\x03\x04")
-        && zip::ZipArchive::new(Cursor::new(bytes))
-            .ok()
-            .and_then(|mut z| read_entry(&mut z, "mimetype"))
-            .is_some_and(|m| m.trim_ascii() == MIME.as_bytes())
+        && zip::ZipArchive::new(Cursor::new(bytes)).ok().and_then(|mut z| mimetype(&mut z)).is_some_and(|m| m.trim_ascii() == MIME.as_bytes())
+}
+
+/// The `mimetype` entry, read no further than a real one could be (it may claim any size).
+fn mimetype(z: &mut Zip<'_>) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    z.by_name("mimetype").ok()?.take(65).read_to_end(&mut out).ok()?;
+    (out.len() <= 64).then_some(out)
 }
 
 /// An XML element with its children.
@@ -410,7 +414,7 @@ pub fn import(bytes: &[u8]) -> Result<Document, String> {
 /// Read a HWPX document, building no more from its XML than `budget` allows.
 pub(crate) fn import_within(bytes: &[u8], mut budget: Budget) -> Result<Document, String> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("HWPX: not a Hangul document ({e})"))?;
-    let mime = read_entry(&mut z, "mimetype");
+    let mime = mimetype(&mut z);
     if mime.as_deref().is_some_and(|m| m.trim_ascii() != MIME.as_bytes()) {
         return Err("HWPX: not a Hangul document (wrong mimetype)".into());
     }
@@ -427,7 +431,8 @@ pub(crate) fn import_within(bytes: &[u8], mut budget: Budget) -> Result<Document
     let (items, paths) = package(&mut z, &mut budget)?;
     let mut doc = Document::new();
     doc.body.clear();
-    let mut pictures = Pictures::new(MAX_MEDIA);
+    // Each picture is held twice, in the cache and in the document.
+    let mut pictures = Pictures::new(MAX_MEDIA / 2);
     let mut media: HashMap<String, Option<String>> = HashMap::new();
     let mut sections = Vec::new();
     for path in paths {
@@ -671,8 +676,9 @@ impl Sec<'_, '_> {
         let (mut w, mut h) = sz.map_or((0.0, 0.0), |s| (pt(s.num("width")), pt(s.num("height"))));
         if !(w >= 1.0 && h >= 1.0) {
             let px = self.doc.media.get(&media).and_then(|d| crate::model::image_px(d)).unwrap_or((96, 96));
-            (w, h) = ((px.0 as f32 * 0.75).clamp(1.0, 2000.0), (px.1 as f32 * 0.75).clamp(1.0, 2000.0));
+            (w, h) = ((px.0 as f32 * 0.75).max(1.0), (px.1 as f32 * 0.75).max(1.0));
         }
+        let (w, h) = (w.min(1584.0), h.min(1584.0));
         pb.object(InlineObject::Image { media, w, h, alt: String::new(), float: Float::default(), crop: [0.0; 4], ole: None }, props);
     }
 

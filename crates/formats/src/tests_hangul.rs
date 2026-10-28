@@ -298,6 +298,36 @@ fn table_grid_and_page_stay_bounded() {
     assert!(doc.sections().iter().all(|(_, s)| s.page_w <= 1584.0 && s.page_h <= 1584.0));
 }
 
+/// A picture keeps to Word's 22 inches whatever size it claims, and a `mimetype` entry is read no
+/// further than a real one could be.
+#[test]
+fn picture_size_and_mimetype_stay_bounded() {
+    let mut png = Vec::new();
+    image::RgbaImage::new(4, 4).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let section = r#"<hs:sec xmlns:hs="s" xmlns:hp="p" xmlns:hc="c"><hp:p><hp:run><hp:pic><hp:sz width="99999999" height="99999999"/><hc:img binaryItemIDRef="image1"/></hp:pic></hp:run></hp:p></hs:sec>"#;
+    let pkg = |mime: &[u8]| {
+        let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default();
+        for (name, data) in
+            [("mimetype", mime), ("Contents/header.xml", b"<hh:head/>"), ("Contents/section0.xml", section.as_bytes()), ("BinData/image1", &png)]
+        {
+            z.start_file(name, o).unwrap();
+            std::io::Write::write_all(&mut z, data).unwrap();
+        }
+        z.finish().unwrap().into_inner()
+    };
+    let doc = hwpx::import(&pkg(b"application/hwp+zip")).unwrap();
+    let sizes: Vec<_> = paras(&doc)
+        .iter()
+        .flat_map(|p| &p.objects)
+        .filter_map(|o| if let wordcraft_doc::InlineObject::Image { w, h, .. } = o { Some((*w, *h)) } else { None })
+        .collect();
+    assert_eq!(sizes, [(1584.0, 1584.0)]);
+    // The MIME type followed by a megabyte of padding is not a HWPX package.
+    let padded = [b"application/hwp+zip".as_slice(), &vec![b' '; 1 << 20]].concat();
+    assert!(!hwpx::is_hwpx(&pkg(&padded)));
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig { cases: 64, ..Default::default() })]
     #[test]
