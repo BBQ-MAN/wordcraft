@@ -164,17 +164,24 @@ fn stream(comp: &mut Comp<'_>, path: &str) -> Option<Vec<u8>> {
     Some(v)
 }
 
-/// Inflate a compressed stream (raw deflate; zlib-wrapped streams are accepted too).
-fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
-    inflate_within(data, MAX_INFLATE)
+/// Why a stream didn't inflate.
+#[derive(Debug, PartialEq)]
+enum Unpacked {
+    /// It inflates to more than the limit.
+    TooBig,
+    /// It isn't deflate data.
+    Damaged,
 }
 
-/// [`inflate`], stopping at `limit` bytes of output: a stream that inflates to more is refused
-/// before it is all inflated.
-fn inflate_within(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
-    miniz_oxide::inflate::decompress_to_vec_with_limit(data, limit)
-        .or_else(|_| miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, limit))
-        .map_err(|e| format!("HWP: a compressed stream is damaged ({:?})", e.status))
+/// Inflate a compressed stream (raw deflate; zlib-wrapped streams are accepted too), stopping at
+/// `limit` bytes of output: a stream that inflates to more is refused before it is all inflated.
+fn inflate_within(data: &[u8], limit: usize) -> Result<Vec<u8>, Unpacked> {
+    use miniz_oxide::inflate::{TINFLStatus, decompress_to_vec_with_limit, decompress_to_vec_zlib_with_limit};
+    decompress_to_vec_with_limit(data, limit).or_else(|raw| {
+        decompress_to_vec_zlib_with_limit(data, limit).map_err(|zlib| {
+            if raw.status == TINFLStatus::HasMoreOutput || zlib.status == TINFLStatus::HasMoreOutput { Unpacked::TooBig } else { Unpacked::Damaged }
+        })
+    })
 }
 
 /// The `FileHeader` flags of a HWP 5.0 file, or `None` when `bytes` isn't one.
@@ -381,11 +388,12 @@ fn para_shape(rd: &mut Rd, fills: &[BorderFill], tabs: &[Vec<TabStop>]) -> RawPa
 
 /// Read a HWP 5.0 document.
 pub fn import(bytes: &[u8]) -> Result<Document, String> {
-    import_within(bytes, MAX_MEDIA)
+    import_within(bytes, MAX_MEDIA, MAX_INFLATE)
 }
 
-/// Read a HWP 5.0 document, loading at most `media` picture bytes in all.
-pub(crate) fn import_within(bytes: &[u8], media: u64) -> Result<Document, String> {
+/// Read a HWP 5.0 document, loading at most `media` picture bytes and inflating at most `text`
+/// bytes of `DocInfo` and sections in all.
+pub(crate) fn import_within(bytes: &[u8], media: u64, text: usize) -> Result<Document, String> {
     if bytes.starts_with(SIGNATURE) {
         return Err("HWP: Hangul 97 and older (HWP 3) documents are not supported, only HWP 5.0".into());
     }
@@ -407,9 +415,18 @@ pub(crate) fn import_within(bytes: &[u8], media: u64) -> Result<Document, String
         return Err("HWP: this is a distribution (DRM) document, which WordCraft can't open".into());
     }
     let compressed = flags & 1 != 0;
-    let read = |comp: &mut Comp<'_>, path: &str| -> Result<Option<Vec<u8>>, String> {
+    // One inflate budget for DocInfo and every section together.
+    let mut left = text;
+    let mut read = |comp: &mut Comp<'_>, path: &str| -> Result<Option<Vec<u8>>, String> {
         match stream(comp, path) {
-            Some(d) if compressed => inflate(&d).map(Some),
+            Some(d) if compressed => match inflate_within(&d, left) {
+                Ok(v) => {
+                    left = left.saturating_sub(v.len());
+                    Ok(Some(v))
+                }
+                Err(Unpacked::TooBig) => Err("HWP: the document's text is too large to open".into()),
+                Err(Unpacked::Damaged) => Err("HWP: a compressed stream is damaged".into()),
+            },
             other => Ok(other),
         }
     };
@@ -453,7 +470,8 @@ struct Body<'a, 'c> {
     doc: &'a mut Document,
     comp: &'a mut Comp<'c>,
     compressed: bool,
-    /// Bin id → media key (`None`: unreadable), so each picture loads once in the document.
+    /// `BinData` storage id → media key (`None`: unreadable), so each picture stream loads once in
+    /// the document, however many bin records name it.
     pics: &'a mut HashMap<u16, Option<String>>,
     /// Picture bytes the document still allows.
     room: &'a mut u64,
@@ -749,24 +767,24 @@ impl Body<'_, '_> {
     /// The display size of a picture: the file's, or its pixel size when the file gives none.
     fn size(&self, media: &str, w: f32, h: f32) -> (f32, f32) {
         if w >= 1.0 && h >= 1.0 {
-            return (w, h);
+            return (w.min(1584.0), h.min(1584.0));
         }
         let px = self.doc.media.get(media).and_then(|d| crate::model::image_px(d)).unwrap_or((96, 96));
-        ((px.0 as f32 * 0.75).clamp(1.0, 2000.0), (px.1 as f32 * 0.75).clamp(1.0, 2000.0))
+        ((px.0 as f32 * 0.75).clamp(1.0, 1584.0), (px.1 as f32 * 0.75).clamp(1.0, 1584.0))
     }
 
     /// Load picture `bin` (1-based) into the document's media, once.
     fn picture(&mut self, bin: u16) -> Option<String> {
-        if let Some(hit) = self.pics.get(&bin) {
+        let b = self.info.bins.get(usize::from(bin).checked_sub(1)?)?;
+        if let Some(hit) = self.pics.get(&b.storage) {
             return hit.clone();
         }
-        let key = self.load(bin);
-        self.pics.insert(bin, key.clone());
+        let key = self.load(b);
+        self.pics.insert(b.storage, key.clone());
         key
     }
 
-    fn load(&mut self, bin: u16) -> Option<String> {
-        let b = self.info.bins.get(usize::from(bin).checked_sub(1)?)?;
+    fn load(&mut self, b: &Bin) -> Option<String> {
         if b.ext.is_empty() || *self.room == 0 {
             return None;
         }
@@ -778,11 +796,16 @@ impl Body<'_, '_> {
         // is all inflated, not after.
         let room = usize::try_from(*self.room).unwrap_or(usize::MAX).min(MAX_INFLATE);
         let compressed = b.compress == 1 || (b.compress == 0 && self.compressed);
-        // A stream that doesn't inflate is taken as stored, as Hangul writes some that way.
-        let data = match compressed.then(|| inflate_within(&raw, room).ok()).flatten() {
-            Some(data) => data,
-            None if raw.len() <= room => raw,
-            None => return None,
+        // A stream that doesn't inflate is taken as stored, as Hangul writes some that way. One that
+        // inflates past the budget ends the pictures: no later one is inflated.
+        let data = match compressed.then(|| inflate_within(&raw, room)) {
+            Some(Ok(data)) => data,
+            Some(Err(Unpacked::TooBig)) => {
+                *self.room = 0;
+                return None;
+            }
+            _ if raw.len() <= room => raw,
+            _ => return None,
         };
         let ext = crate::model::sniff_image(&data)?;
         *self.room = self.room.checked_sub(data.len() as u64)?;
@@ -809,6 +832,7 @@ mod tests {
     fn inflate_stops_at_the_limit() {
         let packed = miniz_oxide::deflate::compress_to_vec(&[7u8; 10_000], 6);
         assert_eq!(super::inflate_within(&packed, 20_000).map(|v| v.len()), Ok(10_000));
-        assert!(super::inflate_within(&packed, 1_000).is_err());
+        assert_eq!(super::inflate_within(&packed, 1_000), Err(super::Unpacked::TooBig));
+        assert_eq!(super::inflate_within(b"not deflate data", 1_000), Err(super::Unpacked::Damaged));
     }
 }

@@ -67,14 +67,24 @@ fn hwp_uncompressed_and_compressed() {
 #[test]
 fn hwp_picture_budget_spans_sections() {
     let bytes = hangul_samples::hwp_pictures(4, 1000);
-    let all = hwp::import_within(&bytes, u64::MAX).unwrap();
+    let all = hwp::import_within(&bytes, u64::MAX, usize::MAX).unwrap();
     assert_eq!(all.media.len(), 4);
     assert_eq!(all.body.iter().filter_map(|b| b.as_para()).map(|p| p.objects.len()).sum::<usize>(), 4);
     // Room for two and a half pictures keeps two, though each section alone would fit its own.
-    let doc = hwp::import_within(&bytes, 2500).unwrap();
+    let doc = hwp::import_within(&bytes, 2500, usize::MAX).unwrap();
     let total: usize = doc.media.values().map(|d| d.len()).sum();
     assert!(total <= 2500, "{total}");
     assert_eq!(doc.media.len(), 2);
+}
+
+/// DocInfo and every section inflate within one document-wide budget: past it the import fails
+/// cleanly instead of inflating each stream up to the per-stream limit.
+#[test]
+fn hwp_text_budget_spans_streams() {
+    let bytes = hangul_samples::hwp(true);
+    assert!(hwp::import_within(&bytes, u64::MAX, usize::MAX).is_ok());
+    let err = hwp::import_within(&bytes, u64::MAX, 16).unwrap_err();
+    assert!(err.contains("too large"), "{err}");
 }
 
 #[test]
