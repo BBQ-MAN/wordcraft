@@ -186,6 +186,7 @@ fn inflate_within(data: &[u8], limit: usize) -> Result<Vec<u8>, Unpacked> {
 
 /// The `FileHeader` flags of a HWP 5.0 file, or `None` when `bytes` isn't one.
 fn header_flags(bytes: &[u8]) -> Option<u32> {
+    wordcraft_doc::cfb_guard::check(bytes).ok()?;
     let mut comp = cfb::CompoundFile::open(Cursor::new(bytes)).ok()?;
     let h = stream(&mut comp, "/FileHeader")?;
     if !h.starts_with(SIGNATURE) {
@@ -397,6 +398,7 @@ pub(crate) fn import_within(bytes: &[u8], media: u64, text: usize) -> Result<Doc
     if bytes.starts_with(SIGNATURE) {
         return Err("HWP: Hangul 97 and older (HWP 3) documents are not supported, only HWP 5.0".into());
     }
+    wordcraft_doc::cfb_guard::check(bytes).map_err(|e| format!("HWP: not a Hangul document ({e})"))?;
     let mut comp = cfb::CompoundFile::open(Cursor::new(bytes)).map_err(|e| format!("HWP: not a Hangul document ({e})"))?;
     let header = stream(&mut comp, "/FileHeader").ok_or("HWP: not a Hangul document (no FileHeader)")?;
     if !header.starts_with(SIGNATURE) {
@@ -815,6 +817,15 @@ impl Body<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+    /// #3642: a DIFAT naming one FAT sector thousands of times is refused before `cfb` builds a
+    /// FAT far larger than the file, both when sniffing and when importing.
+    #[test]
+    fn a_repeating_difat_is_refused_before_cfb_opens_it() {
+        let f = wordcraft_doc::cfb_guard::repeating_difat_sample();
+        assert!(!super::is_hwp(&f));
+        assert!(super::import(&f).is_err_and(|e| e.contains("FAT sectors in a file of")));
+    }
+
     /// A stream of empty records stops at the cap, as if it ended there; below it nothing changes.
     #[test]
     fn records_stop_at_the_cap() {
