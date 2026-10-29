@@ -523,14 +523,15 @@ impl Sec<'_, '_> {
                     }
                     "pic" => self.picture(e, &mut pb, &props),
                     "equation" | "linesegarray" => {}
-                    // A drawing: its pictures show; a text box's paragraphs follow the paragraph.
+                    // A drawing: a text box's paragraphs (with any pictures in them) follow the
+                    // paragraph; otherwise its picture shows.
                     _ if depth < MAX_DEPTH => {
-                        if let Some(pic) = e.find("pic") {
+                        if let Some(dt) = e.find("drawText") {
+                            if let Some(b) = self.sublist(dt, depth + 1) {
+                                after.push(b);
+                            }
+                        } else if let Some(pic) = e.find("pic") {
                             self.picture(pic, &mut pb, &props);
-                        } else if let Some(dt) = e.find("drawText")
-                            && let Some(b) = self.sublist(dt, depth + 1)
-                        {
-                            after.push(b);
                         }
                     }
                     _ => {}
