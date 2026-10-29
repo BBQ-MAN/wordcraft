@@ -338,6 +338,29 @@ fn picture_size_and_mimetype_stay_bounded() {
     assert!(!hwpx::is_hwpx(&pkg(&padded)));
 }
 
+/// A text box holding a picture keeps its text: the picture is read with the box's paragraphs.
+#[test]
+fn text_box_with_a_picture_keeps_its_text() {
+    let mut png = Vec::new();
+    image::RgbaImage::new(4, 4).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let section = r#"<hs:sec xmlns:hs="s" xmlns:hp="p" xmlns:hc="c"><hp:p><hp:run><hp:t>before</hp:t><hp:rect><hp:drawText><hp:subList><hp:p><hp:run><hp:t>boxed</hp:t><hp:pic><hp:sz width="7200" height="7200"/><hc:img binaryItemIDRef="image1"/></hp:pic></hp:run></hp:p></hp:subList></hp:drawText></hp:rect></hp:run></hp:p></hs:sec>"#;
+    let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let o = zip::write::SimpleFileOptions::default();
+    for (name, data) in [
+        ("mimetype", b"application/hwp+zip".as_slice()),
+        ("Contents/header.xml", b"<hh:head/>"),
+        ("Contents/section0.xml", section.as_bytes()),
+        ("BinData/image1", &png),
+    ] {
+        z.start_file(name, o).unwrap();
+        std::io::Write::write_all(&mut z, data).unwrap();
+    }
+    let doc = hwpx::import(&z.finish().unwrap().into_inner()).unwrap();
+    let ps = paras(&doc);
+    assert_eq!(ps.iter().map(|p| p.text.trim_matches('\u{FFFC}')).collect::<Vec<_>>(), ["before", "boxed"]);
+    assert_eq!(ps[1].objects.len(), 1);
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig { cases: 64, ..Default::default() })]
     #[test]
